@@ -1,0 +1,48 @@
+# playbook.yml
+# Created - 02/14/2014
+# Ansible playbook for scatter dev environment.
+
+---
+- hosts: default
+
+  tasks:
+
+    - action: shell whoami
+      register: whoami
+
+    - name: update apt cache
+      apt: update_cache=yes cache_valid_time=3600
+      sudo: yes
+
+    - name: upgrade apt
+      apt: upgrade=yes
+      sudo: yes
+
+    - name: install system packages
+      apt: pkg={{ item }} state=latest
+      sudo: yes
+      with_items:
+        - build-essential
+        - git
+        - htop
+        - tree
+        - curl
+        - wget
+        - diff
+        - python-dev
+
+    - name: install pip
+      sudo: yes
+      shell: wget -c https://raw.github.com/pypa/pip/master/contrib/get-pip.py; python get-pip.py; rm get-pip.py;
+
+    - name: install setuptools
+      sudo: yes
+      shell: pip install -U setuptools
+
+    - name: install distribute
+      sudo: yes
+      shell: pip install -U distribute
+
+    - name: install virtualenv
+      sudo: yes
+      shell: pip install -U virtualenv
