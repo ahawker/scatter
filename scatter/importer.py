@@ -30,13 +30,13 @@ def import_from(obj, silent=False):
 
     obj = str(obj)
 
-    # No import hierarchy, importing a top level module.
-    if '.' not in obj:
-        return importlib.import_module(obj)
-
-    # Import module and return specified class.
-    mod, cls = obj.rsplit('.', 1)
     try:
+        # No import hierarchy, importing a top level module.
+        if '.' not in obj:
+            return importlib.import_module(obj)
+
+        # Import module and return specified attribute.
+        mod, cls = obj.rsplit('.', 1)
         module = importlib.import_module(mod)
         try:
             return getattr(module, cls)
