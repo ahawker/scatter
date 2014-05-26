@@ -13,8 +13,14 @@ __all__ = ('Registry',)
 
 import weakref
 
+from scatter.meta import is_abstract
 from scatter.structures import ScatterMapping
-from scatter.exceptions import ServiceDependencyError
+from scatter.exceptions import ScatterException
+
+
+class RegistryError(ScatterException):
+    """
+    """
 
 
 class Entry(object):
@@ -45,7 +51,10 @@ class Registry(ScatterMapping):
         :param name:
         :return:
         """
-        del self[key]
+        try:
+            del self[key]
+        except KeyError:
+            raise RegistryError('Entry {0} not found'.format(key))
 
     def get_concrete_type(self, abc, silent=False):
         """
@@ -55,15 +64,15 @@ class Registry(ScatterMapping):
         :param silent: Boolean flag to set if we should raise a `ServiceDependencyError` or return None
         when no types implementing the given abstract type are found.
         """
-        cls = next((c for c in self.values() if issubclass(c, abc) and not c.is_abstract()), None)
+        cls = next((c for c in self.values() if issubclass(c, abc) and not is_abstract(c)), None)
         if cls is not None:
             return cls
 
         if not silent:
-            msg = ('No implementation found for abstract service class "{0}". '
+            msg = ('No implementation found for abstract class "{0}". '
                    'If attempting to load an implementation defined as an extension, '
                    'please note that extension modules must be explicitly imported before doing so.').format(abc)
-            raise ServiceDependencyError(msg)
+            raise RegistryError(msg)
 
 
 global_registry = Registry()
