@@ -7,7 +7,7 @@
     :copyright: (c) 2014 Andrew Hawker.
     :license: ?, See LICENSE file.
 """
-__all__ = ('transition', 'guard', 'StateMachine')
+__all__ = ('InvalidTransition', 'transition', 'guard', 'StateMachine')
 
 
 import collections
@@ -148,7 +148,6 @@ class Transition(object):
 
         :param state_machine: Instance of the object whose functions are decorated with @transition.
         """
-
         def decorator(*args, **kwargs):
             """
             Decorator which encapsulates execution of a single transition.
@@ -175,6 +174,7 @@ class Transition(object):
 
         # Attach descriptor to wrapped transition func to allow for state "lookup" so we can playback/rewind
         # an entire object transition lifecycle.
+        functools.update_wrapper(decorator, self.action)
         decorator.transition = self
         return decorator
 
@@ -217,14 +217,13 @@ class StateGuardDescriptor(object):
             Decorator which validates the current state vs expected and calls
             the function when valid.
             """
-            # If the instance doesn't expose a 'state_machine' attribute, just call the function
-            # as normal. TODO: Consider raising a call to warn() here.
+            # If the instance isn't a state machine, raise an error.
             state_machine = getattr(instance, 'state_machine', None)
             if state_machine is None:
-                return self.func(instance, *args, **kwargs)
+                raise RuntimeError('@guard descriptor must be used on classes which implement a state machine')
 
-            # Raise error if current state isn't one of our valid states.
             state = state_machine.state
+            # Raise error if current state isn't one of our valid states.
             if not state in iterable(self.state):
                 raise InvalidTransition('{0} cannot be called in state {1}'.format(self.func.__name__, state))
 

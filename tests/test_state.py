@@ -11,23 +11,19 @@ from scatter.state import StateMachine, transition, guard, InvalidTransition
 
 
 @pytest.fixture(scope='function', params=['off'])
-def switch(request):
-    return Switch(request.param)
+def switch_state_machine(request):
+    return SwitchStateMachine(request.param)
 
 
-class Switch(StateMachine):
+@pytest.fixture(scope='function')
+def switch(switch_state_machine):
+    return Switch(switch_state_machine)
+
+
+class SwitchStateMachine(StateMachine):
     """
-    Test fixture which implements a basic on/off switch state machine.
+    State machine for a switch which has two states: on and off.
     """
-
-    def is_initial_state(self):
-        return self.state == self.initial_state
-
-    def is_on(self):
-        return self.state == 'on'
-
-    def is_off(self):
-        return self.state == 'off'
 
     @transition('off', 'on')
     def turn_on(self):
@@ -36,6 +32,34 @@ class Switch(StateMachine):
     @transition('on', 'off')
     def turn_off(self):
         pass
+
+
+class Switch(object):
+    """
+    Test fixture which implements a basic on/off switch state machine.
+    """
+
+    def __init__(self, state_machine):
+        self.state_machine = state_machine
+
+    def is_initial_state(self):
+        return self.state_machine.state == self.state_machine.initial_state
+
+    def is_on(self):
+        return self.state_machine.state == 'on'
+
+    def is_off(self):
+        return self.state_machine.state == 'off'
+
+    @property
+    def state(self):
+        return self.state_machine.state
+
+    def turn_on(self):
+        return self.state_machine.turn_on()
+
+    def turn_off(self):
+        return self.state_machine.turn_off()
 
     @guard('on')
     def call_when_on(self):
@@ -46,30 +70,30 @@ class Switch(StateMachine):
         return True
 
 
-def test_transitions_wrapper(switch):
+def test_transitions_wrapper(switch_state_machine):
     """
     Wrapping methods in @transitions descriptors should expose a `transition`
     object on the method which contains execution data. Also, these decorated
     functions should look and act as the original function.
     """
-    assert hasattr(switch.turn_off, 'transition')
+    assert hasattr(switch_state_machine.turn_off, 'transition')
 
-    t = switch.turn_off.transition
-    assert t.action.__name__ == switch.turn_off.__name__
-    assert t.action.__module__ == switch.turn_off.__module__
-    assert t.action.__doc__ == switch.turn_off.__doc__
+    t = switch_state_machine.turn_off.transition
+    assert t.action.__name__ == switch_state_machine.turn_off.__name__
+    assert t.action.__module__ == switch_state_machine.turn_off.__module__
+    assert t.action.__doc__ == switch_state_machine.turn_off.__doc__
 
 
-def test_transition_current_state_set(switch):
+def test_transition_current_state_set(switch_state_machine):
     """
     Test that `current_state` and `next_state` values are properly
     stored when using @transition descriptors.
     """
-    assert switch.turn_off.transition.current_state == 'on'
-    assert switch.turn_off.transition.next_state == 'off'
+    assert switch_state_machine.turn_off.transition.current_state == 'on'
+    assert switch_state_machine.turn_off.transition.next_state == 'off'
 
-    assert switch.turn_on.transition.current_state == 'off'
-    assert switch.turn_on.transition.next_state == 'on'
+    assert switch_state_machine.turn_on.transition.current_state == 'off'
+    assert switch_state_machine.turn_on.transition.next_state == 'on'
 
 
 def test_transitions_change_state(switch):
@@ -81,12 +105,12 @@ def test_transitions_change_state(switch):
     # Flip on.
     switch.turn_on()
     assert switch.is_on()
-    assert switch.state == switch.turn_on.transition.next_state
+    assert switch.state == switch.state_machine.turn_on.transition.next_state
 
     # Flip off.
     switch.turn_off()
     assert switch.is_off()
-    assert switch.state == switch.turn_off.transition.next_state
+    assert switch.state == switch.state_machine.turn_off.transition.next_state
 
 
 def test_invalid_transition_raises(switch):
