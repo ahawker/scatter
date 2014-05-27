@@ -59,7 +59,7 @@ class ImmutableDict(dict):
         return super(ImmutableDict, self).clear()
 
     def copy(self):
-        return dict(self)
+        return ImmutableDict(self)
 
     def __copy__(self):
         return self
@@ -202,7 +202,7 @@ class ScatterMapping(collections.MutableMapping, KeyTransformMixin, LoadableMapp
     def section(self, prefix=''):
         """
         """
-        return dict((k, v) for k, v in self.iteritems() if k.startswith(prefix))
+        return ScatterMapping(type(self.store), ((k, v) for k, v in self.iteritems() if k.startswith(prefix)))
 
 
 class ScatterDict(ScatterMapping):
@@ -258,6 +258,11 @@ class EnumMember(object):
         self.enum = enum
         self.name = name
         self.value = value
+
+    def __eq__(self, other):
+        if isinstance(other, EnumMember):
+            return self.value == other.value
+        return self.value == other
 
     def __repr__(self):
         return '<{0}.{1}: {2}'.format(self.enum, self.name, self.value)
