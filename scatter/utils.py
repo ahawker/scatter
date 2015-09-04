@@ -42,6 +42,6 @@ def get_import_path(import_name):
     if loader is None or import_name == '__main__':
         return os.getcwd()
 
-    # ...
+    # Attempt to import the module and return path to it.
     import_path = loader.get_filename(import_name)
     return os.path.dirname(os.path.abspath(import_path))

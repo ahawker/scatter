@@ -19,6 +19,8 @@ import pwd
 import signal
 
 from scatter.config import ConfigAttribute
+from scatter.descriptors import cached
+from scatter.importer import PackageImporter, import_from
 from scatter.service import Service, ServiceAttribute
 
 
@@ -59,6 +61,14 @@ class Process(Service):
     Service analogous to an operating system process.
     """
 
+    #:
+    #:
+    __root__ = True
+
+    #:
+    #:
+    package_importer_class = ConfigAttribute(PackageImporter)
+
     #: Set the process group by name or its id.
     group = ConfigAttribute()
 
@@ -94,6 +104,13 @@ class Process(Service):
         self.msk = os.umask(0)
         self.env = os.environ.copy()
 
+    @cached
+    def package_importer(self):
+        """
+        """
+        cls = import_from(self.package_importer_class)
+        return cls(self)
+
     def on_initializing(self, *args, **kwargs):
         """
         """
@@ -118,6 +135,9 @@ class Process(Service):
             os.setgid(self.gid)
             os.setuid(self.uid)
 
+        # ...
+        self.package_importer.load()
+
     def on_stopped(self, *args, **kwargs):
         """
         """
@@ -127,6 +147,16 @@ class Process(Service):
         """
         """
         self.config.from_file(self.config_file)
+
+    @classmethod
+    def run(cls, *args, **kwargs):
+        """
+        """
+        with cls.new(*args, **kwargs) as process:
+            process.log.info('Service running')
+            process.log.info(process.config)
+            process.log.info(process.cwd)
+            process.join(5)
 
 
 class Daemon(Process):

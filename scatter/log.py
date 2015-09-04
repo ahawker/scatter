@@ -14,6 +14,8 @@ import logging
 
 from scatter.meta import resolve_class
 
+DEFAULT_LOG_LEVEL = logging.INFO
+
 
 def create_logger(service):
     """
@@ -46,7 +48,7 @@ def create_logger(service):
             if self.level == 0 and service.debug:
                 return logging.DEBUG
 
-            if service.log_level is not None:
+            if service.log_level is not None and self.level != service.log_level:
                 self.setLevel(service.log_level)
 
             return super(ScatterLogger, self).getEffectiveLevel()
@@ -65,14 +67,16 @@ def create_logger(service):
 
             return super(ScatterLogger, self).makeRecord(name, level, fn, lno, msg, args, exc_info, func, extra)
 
-        def child(self, obj):
+        def child(self, service):
             """
             Return a :class: `~scatter.log.ScatterLogger` instance attached as a child
             to this logger keyed by class name.
             """
-            suffix = resolve_class(obj)
-            child = super(ScatterLogger, self).getChild(suffix)
+            #suffix = resolve_class(obj)
+            print 'CHILD SUFFIX {0}'.format('.'.join((self.name, service.id)))
+            child = super(ScatterLogger, self).getChild(service.id)
             child.__class__ = ScatterLogger
+            child.propagate = True
             return child
 
         @staticmethod
@@ -89,19 +93,21 @@ def create_logger(service):
 
     # Only configure logger when its a "root" logger, otherwise just attach it as a child logger.
     # A child logger should inherit its ancestors formatter and handler configuration.
-    if service.is_root or service.is_app:
+    #if service.is_root() or service.is_app():
+    #    print '{0} is root or app!'.format(service)
         # Configure Scatter log handler.
-        formatter = (service.log_formatter_class or logging.Formatter)(service.log_format)
-        handler = (service.log_handler_class or logging.StreamHandler)()
-        handler.setFormatter(formatter)
+    formatter = (service.log_formatter_class or logging.Formatter)(service.log_format)
+    handler = (service.log_handler_class or logging.StreamHandler)()
+    handler.setFormatter(formatter)
 
-        # Configure Scatter logger.
-        logger = logging.getLogger(service.id)
-        logger.__class__ = ScatterLogger
-        logger.addHandler(handler)
-        #logger.propagate = False
-    else:
-        logger = service.parent.log.child(service.id)
+    # Configure Scatter logger.
+    logger = logging.getLogger(service.id)
+    logger.__class__ = ScatterLogger
+    logger.addHandler(handler)
+    logger.setLevel(service.log_level)
+    logger.propagate = False
+    #else:
+    #    logger = service.parent.log.child(service)
 
     return logger
 

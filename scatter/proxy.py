@@ -7,9 +7,7 @@
     :copyright: (c) 2014 Andrew Hawker.
     :license: ?, See LICENSE file.
 """
-__all__ = ('Proxy', 'ProxyService')
-
-import service
+__all__ = ('Proxy',)
 
 
 class Proxy(object):

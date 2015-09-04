@@ -21,8 +21,8 @@ from scatter.config import Config, ConfigAttribute
 from scatter.descriptors import MetaDescriptor, cached
 from scatter.exceptions import ScatterException
 from scatter.importer import import_from
-from scatter.log import create_logger
-from scatter.meta import resolve_type, resolve_class, resolve_type_meta, get_public_attrs, get_instance_descriptors
+from scatter.log import create_logger, DEFAULT_LOG_LEVEL
+from scatter.meta import resolve_type, resolve_class, resolve_type_meta,get_public_attrs, get_instance_descriptors, is_abstract
 from scatter.registry import global_registry
 from scatter.state import transition, guard, StateMachine
 from scatter.structures import ScatterDict, ScatterMapping, ImmutableDict, Enum
@@ -37,6 +37,10 @@ initialized = guard(ServiceState.Initialized)
 running = guard(ServiceState.Running)
 stopped = guard(ServiceState.Stopped)
 
+#running = None
+#initialized = None
+#stopped = None
+#new = None
 
 class ServiceResolveError(ScatterException):
     """
@@ -166,6 +170,7 @@ class DependencyAttribute(MetaDescriptor):
 
         # If the class is abstract, query registry for first concrete subclass.
         if cls.is_abstract():
+            print 'ABS: {0} CONC: {1}'.format(cls, list(registry.get_concrete_types(cls)))
             cls = registry.get_concrete_type(cls)
 
         instance.log.info("Dependency '{0}' of type {1} loaded service {2}.".format(self.__name__,
@@ -193,6 +198,9 @@ class DependencyAttribute(MetaDescriptor):
                 instance.error.warning('Invalid dependency config value {0} of type {1}.'.format(self.config,
                                                                                                  type(value)))
         return self.cls or self.type or None
+
+    def _resolve(self, instance):
+        pass
 
 
 class ServiceMeta(type):
@@ -227,7 +235,9 @@ class ServiceCollection(ScatterMapping):
     """
 
     def __init__(self, service, services=None):
-        super(ServiceCollection, self).__init__(weakref.WeakValueDictionary) #should be weakvalue + ordered!! TODO
+        import collections
+        #super(ServiceCollection, self).__init__(weakref.WeakValueDictionary) #should be weakvalue + ordered!! TODO
+        super(ServiceCollection, self).__init__(collections.OrderedDict)
         self.service = service
         if services is not None:
             self.add(services)
@@ -291,78 +301,83 @@ class ServiceStateMachine(StateMachine):
         `stop`:: (initialized, running) -> stopped
         `reload`:: running -> running
     """
+    import threading
 
     def __init__(self, service):
-        super(ServiceStateMachine, self).__init__(ServiceState.New)
+        import threading
+        super(ServiceStateMachine, self).__init__(ServiceState.New, threading.Condition)
         self.service = service
 
-    @property
     def is_new(self):
         return self.state == ServiceState.New
 
-    @property
     def is_initialized(self):
         return self.state == ServiceState.Initialized
 
-    @property
+    def is_started(self):
+        return self.state in (ServiceState.Running, ServiceState.Stopped)
+
     def is_running(self):
         return self.state == ServiceState.Running
+
+    def is_stopped(self):
+        return self.state == ServiceState.Stopped
 
     @transition(ServiceState.New, ServiceState.Initialized)
     def init(self, *args, **kwargs):
         self.service.initializing(*args, **kwargs)
 
     @init.enter
-    def on_init_enter(self, *args, **kwargs):
+    def init(self, *args, **kwargs):
         self.service.log.info('Service initializing')
         self.service.on_initializing(*args, **kwargs)
 
     @init.exit
-    def on_init_exit(self, *args, **kwargs):
-        self.service.log.info('Service initialized')
+    def init(self, *args, **kwargs):
         self.service.on_initialized(*args, **kwargs)
+        self.service.log.info('Service initialized')
 
-    @transition(ServiceState.Initialized, ServiceState.Running)
+    @transition((ServiceState.Initialized, ServiceState.Stopped), ServiceState.Running)
     def start(self, *args, **kwargs):
         self.service.starting(*args, **kwargs)
 
     @start.enter
-    def on_start_enter(self, *args, **kwargs):
+    def start(self, *args, **kwargs):
         self.service.log.info('Service starting')
         self.service.on_starting(*args, **kwargs)
 
     @start.exit
-    def on_start_exit(self, *args, **kwargs):
-        self.service.log.info('Service started')
+    def start(self, *args, **kwargs):
         self.service.on_started(*args, **kwargs)
+        self.service.log.info('Service started')
 
     @transition((ServiceState.Initialized, ServiceState.Running), ServiceState.Stopped)
     def stop(self, *args, **kwargs):
         self.service.stopping(*args, **kwargs)
 
     @stop.enter
-    def on_stop_enter(self, *args, **kwargs):
+    def stop(self, *args, **kwargs):
         self.service.log.info('Service stopping')
         self.service.on_stopping(*args, **kwargs)
 
     @stop.exit
-    def on_stop_exit(self, *args, **kwargs):
-        self.service.log.info('Service stopped')
+    def stop(self, *args, **kwargs):
         self.service.on_stopped(*args, **kwargs)
+        self.service.log.info('Service stopped')
 
     @transition(ServiceState.Running, ServiceState.Running)
     def reload(self, *args, **kwargs):
         self.service.reloading(*args, **kwargs)
 
     @reload.enter
-    def on_reload_enter(self, *args, **kwargs):
+    def reload(self, *args, **kwargs):
         self.service.log.info('Service reloading')
         self.service.on_reloading(*args, **kwargs)
 
     @reload.exit
-    def on_reload_exit(self, *args, **kwargs):
-        self.service.log.info('Service reloaded')
+    def reload(self, *args, **kwargs):
         self.service.on_reloaded(*args, **kwargs)
+        self.service.log.info('Service reloaded')
 
 
 class Service(object):
@@ -397,11 +412,11 @@ class Service(object):
 
     #: Toggle debug mode. Set this to `True` to enable service debug mode.
     #: Defaults to `False`.
-    debug = ConfigAttribute(True)
+    debug = ConfigAttribute(False)
 
     #: Toggle test mode. Set this to `True` to enable service test mode.
     #: Defaults to `False`.
-    test = ConfigAttribute(False)
+    testing = ConfigAttribute(False)
 
     #: The class used for controlling the service. The service expects this class
     #: to provide the `init`, `start`, `stop` and `reload` functions at a minimum.
@@ -417,9 +432,8 @@ class Service(object):
     #: Defaults to :class: `~scatter.service.ServiceCollection`.
     service_collection_class = ConfigAttribute('scatter.service.ServiceCollection')
 
-    #:
-    #:
-    log_level = ConfigAttribute()
+    #: Set the threshold for the service logger. Defaults to `INFO` (20).
+    log_level = ConfigAttribute(DEFAULT_LOG_LEVEL)
 
     #:
     #:
@@ -435,10 +449,6 @@ class Service(object):
 
     #: Set timeout for service shutdown time. Defaults to `5` seconds.
     stop_timeout = ConfigAttribute(5)
-
-    #: Toggle auto-detach mode. Set this to `True` to enable a service to
-    # automatically detach from its parent when stopped.
-    detach_on_stop = ConfigAttribute(False)
 
     #: Default configuration parameters.
     default_config = ImmutableDict({})
@@ -514,6 +524,26 @@ class Service(object):
         service.init(*args, **kwargs)
         return service
 
+    # def service(self, *sargs, **skwargs):
+    #     """
+    #
+    #     """
+    #
+    #     def decorator(func):
+    #         print 'deco called'
+    #         #s = self.child(Service)
+    #         @functools.wraps(func)
+    #         def wrapper(*args, **kwargs):
+    #             print 'wrapper called'
+    #             #return s.call(self, func, *args, **kwargs)
+    #             return func(*args, **kwargs)
+    #
+    #         x = self.child(Service)
+    #         return x.call()
+    #     #    return wrapper
+    #
+    #     return decorator
+
     @cached
     def dependency_attributes(self):
         """
@@ -569,7 +599,7 @@ class Service(object):
         cls = import_from(self.state_machine_class)
         return cls(self)
 
-    def init(self, name=None, app=None, parent=None, config=None, attributes=None, services=None):
+    def init(self, name=None, process=None, app=None, parent=None, config=None, attributes=None, services=None):
         """
         Initializes the service from scratch or from existing service definition.
 
@@ -581,6 +611,7 @@ class Service(object):
         :param attributes:
         :param services:
         """
+        self.process = process
         self.app = app
         self.parent = parent
 
@@ -588,16 +619,16 @@ class Service(object):
         self.config.from_object(config)
         self.config.from_file(self.config_file)
 
-        self.id = urn()
+        self.id = self.config.get('SERVICE_ID') or urn()
         self.type = resolve_class(self)
         self.fully_qualified_type = resolve_type(self)
-        self.name = name or self.name or self.type
+        self.name = name or self.config.get('SERVICE_NAME') or self.name or self.type
         self.log = create_logger(self)
 
         self.attributes.from_object(self.service_attributes)
         self.attributes.from_object(attributes)
 
-        self.services.from_object(services)
+        self.services.add(services)
 
         self.state_machine.init(parent, config, attributes)
 
@@ -619,25 +650,28 @@ class Service(object):
         """
         self.state_machine.reload(*args, **kwargs)
 
+    def started(self):
+        """
+        """
+        return self.state_machine.is_started()
+
+    def running(self):
+        """
+        """
+        return self.state_machine.is_running()
+
+    def stopped(self):
+        """
+        """
+        return self.state_machine.is_stopped()
+
     def join(self, timeout=None):
         """
         Block the caller for the given number of seconds or until the service has stopped.
 
         :param timeout: Number of seconds to wait for for the service to stop. Defaults to `None`.
         """
-        self.state_machine.stop.transition.wait(timeout)
-
-    def call(self, func, *args, **kwargs):
-        """
-        Call this function with the given arguments as if it were a bound method
-        on this service instance.
-
-        :param func: Function to call as a bound method
-        :param args: (Optional) function arguments
-        :param kwargs: (Optional) function keyword arguments
-        """
-        with self:
-            return func(self, *args, **kwargs)
+        return self.state_machine.stop.wait(timeout)
 
     def attach(self, service, *args, **kwargs):
         """
@@ -694,7 +728,7 @@ class Service(object):
         :param args:
         :param kwargs:
         """
-        service = service_cls.new(self, *args, **kwargs)
+        service = service_cls.new(parent=self, *args, **kwargs)
         self.attach(service)
         return service
 
@@ -710,7 +744,7 @@ class Service(object):
         This works because the `__dict__` attribute of class objects will only contain attributes
         which are defined on that class and none which are part of its object hierarchy.
         """
-        return cls.__dict__.get('__abstract__', False) is True
+        return is_abstract(cls)
 
     def is_root(self):
         """
@@ -722,7 +756,8 @@ class Service(object):
         """
         Returns True if this service is an "application" service.
         """
-        return self.parent is not None and self.parent.is_root()
+        return False
+        #return self.parent is not None and self.parent.is_root()
 
     @classmethod
     @contextlib.contextmanager
@@ -761,14 +796,14 @@ class Service(object):
         Initializes this service and all of its children as the action of the `init` state machine transition.
         """
         self.services.from_object(self.dependency_attributes)
-        for service in (s for s in self.services.all() if s.state_machine.is_new):
+        for service in (s for s in self.services.all() if s.state_machine.is_new()):
             service.init(*args, **kwargs)
 
     def starting(self, *args, **kwargs):
         """
         Starts this service and all of its children as the action of the `start` state machine transition.
         """
-        for service in (s for s in self.services.all() if s.state_machine.is_initialized):
+        for service in (s for s in self.services.all() if s.state_machine.is_initialized()):
             service.start(*args, **kwargs)
 
     def stopping(self, *args, **kwargs):
@@ -780,18 +815,14 @@ class Service(object):
         ..admonition:: Implementation Note
         Child services are stopped in reverse order, meaning the last one started is the first one stopped.
         """
-        for service in (s for s in reversed(list(self.services.all())) if s.state_machine.is_running):
+        for service in (s for s in reversed(list(self.services.all())) if s.state_machine.is_running()):
             service.stop(*args, **kwargs)
-
-        # Allow for services to automatically detach themselves from their parent when stopped.
-        if self.detach_on_stop and self.parent:
-            self.parent.detach(self)
 
     def reloading(self, *args, **kwargs):
         """
         Reloads this service and all of its children as the action of the `reload` state machine transition.
         """
-        for service in (s for s in reversed(list(self.services.all())) if s.state_machine.is_running):
+        for service in (s for s in reversed(list(self.services.all())) if s.state_machine.is_running()):
             service.reload(*args, **kwargs)
 
     def on_initializing(self, *args, **kwargs):
@@ -857,3 +888,68 @@ class Service(object):
         :param parent: Service instance we've detached from.
         """
         pass
+
+#
+# class ServiceDecorator(object):
+#     """
+#
+#     """
+#
+#     def __init__(self, *args, **kwargs):
+#         pass
+#
+#     def on_initializing(self, func):
+#         def decorator(*args, **kwargs):
+#             return func(*args, **kwargs)
+#         self.service.on_initializing = decorator
+#         return
+#
+#     # def __init__(self, *args, **kwargs):
+#     #     self.service = Service.new(*args, **kwargs)
+#     #     self.func = None
+#     #     self.on_init = None
+#     #
+#     # def __call__(self, func, *args, **kwargs):
+#     #     if func is not None:
+#     #         functools.update_wrapper(self, func)
+#     #     self.func = func
+#     #     return self
+#     #
+#     # def __get__(self, instance, owner=None):
+#     #     if instance is None:
+#     #         return self
+#     #     return self.wrapper(instance)
+#     #
+#     # def initializing(self, func):
+#     #     """
+#     #     """
+#     #     @functools.wraps(func)
+#     #     def on_initializing(*args, **kwargs):
+#     #         self.service.on_initializing(*args, **kwargs)
+#     #         func(*args, **kwargs)
+#     #
+#     #     self.service.on_initializing = on_initializing
+#     #     return self
+#     #
+#     # def wrapper(self, instance):
+#     #     """
+#     #
+#     #     """
+#     #     pass
+#
+#
+# service = ServiceDecorator
+#
+#
+#
+# #from scatter import service
+
+
+# @service()
+# def my_service():
+#     pass
+#
+#
+# my_service.on_initializing()
+# def on_initializing():
+#     pass

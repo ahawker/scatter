@@ -5,6 +5,7 @@
     Implements objects which define the scatter wire protocol.
 
 """
+__all__ = []
 
 import uid
 

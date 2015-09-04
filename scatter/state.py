@@ -14,9 +14,12 @@ import collections
 import contextlib
 import functools
 import itertools
+import time
+import weakref
 
 from scatter.descriptors import cached
 from scatter.utils import iterable
+from scatter.uid import urn
 
 
 NO_OP = lambda *args, **kwargs: True
@@ -59,7 +62,7 @@ class Transition(object):
             print 'Thank you! I hate the dark!'
     """
 
-    def __init__(self, current_state, next_state, action=None, condition=None, enter=None, exit=None):
+    def __init__(self, current_state=None, next_state=None, action=None, condition=None, enter=None, exit=None):
         self.current_state = current_state
         self.next_state = next_state
 
@@ -71,27 +74,23 @@ class Transition(object):
     def __call__(self, func, *args, **kwargs):
         if func is not None:
             functools.update_wrapper(self, func)
-        self.action = func
-        return self
+        return self.update(action=func)
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
         return self.wrapper(instance)
 
-    @cached
-    def event(self):
+    def update(self, action=None, condition=None, enter=None, exit=None):
         """
-        Asynchronous event which allows other execution contexts to wait for this
-        specific transition to complete.
-
-        ..note: Usage
-        The main use case for such asynchronous events is that of a the main execution
-        thread waiting for the running service to stop.
+        Create a new `Transition` instance composed of the updated transition functions.
         """
-#        from scatter.async import Event
-        from threading import Event
-        return Event()
+        return type(self)(self.current_state,
+                          self.next_state,
+                          action=action or self.action,
+                          condition=condition or self.condition,
+                          enter=enter or self.on_enter,
+                          exit=exit or self.on_exit)
 
     def guard(self, func):
         """
@@ -100,8 +99,7 @@ class Transition(object):
 
         :param func: Callable which returns a boolean indicating whether or not we should perform transition.
         """
-        self.condition = func
-        return self
+        return self.update(condition=func)
 
     def enter(self, func):
         """
@@ -109,8 +107,7 @@ class Transition(object):
 
         :param func: Callable which is called before the transition action.
         """
-        self.on_enter = func
-        return self
+        return self.update(enter=func)
 
     def exit(self, func):
         """
@@ -118,29 +115,26 @@ class Transition(object):
 
         :param func: Callable which is called after the transition action.
         """
-        self.on_exit = func
-        return self
-
-    def wait(self, timeout=None):
-        """
-        Wait for this transition to complete.
-
-        :param timeout: (Optional) number of seconds to wait for transition to complete. Defaults to `None`.
-        """
-        self.event.wait(timeout)
+        return self.update(exit=func)
 
     @contextlib.contextmanager
-    def transition(self, *args, **kwargs):
+    def transition(self, state_machine, *args, **kwargs):
         """
-        Context manager which executes a transition from within the scope of a `with` statement.
+        Context manager which executes a transition from within the scope of a `with` statement. A
+        transition will run within the content manager of the given state machine and explicitly
+        call the transitions `on_enter` and `on_exit` event functions.
 
         :param args: (Optional) Arguments to be passed to enter/exit actions.
         :param kwargs: (Optional) Keyword arguments passed to enter/exit actions.
         """
-        self.on_enter(*args, **kwargs)
-        yield self
-        self.on_exit(*args, **kwargs)
-        self.event.set()
+        with state_machine:
+            try:
+                self.on_enter(state_machine, *args, **kwargs)
+                yield self
+            except:
+                raise
+            finally:
+                self.on_exit(state_machine, *args, **kwargs)
 
     def wrapper(self, state_machine):
         """
@@ -148,6 +142,13 @@ class Transition(object):
 
         :param state_machine: Instance of the object whose functions are decorated with @transition.
         """
+        def wait(*args, **kwargs):
+            """
+            Helper function which exposes state transition events on
+            transition descriptor objects.
+            """
+            return state_machine.wait_for_state(self.next_state, *args, **kwargs)
+
         def decorator(*args, **kwargs):
             """
             Decorator which encapsulates execution of a single transition.
@@ -156,26 +157,23 @@ class Transition(object):
 
             # Ignore transitions which cannot execute within the current state.
             if not state in iterable(self.current_state):
-                raise InvalidTransition('Cannot transition to {0} from {1}'.format(state, self.current_state))
+                return state
 
             # Ignore transitions whose guard conditions fail to return True.
             if not bool(self.condition(state_machine, *args, **kwargs)):
                 return state
 
             # Perform a state transition.
-            with self.transition(state_machine, *args, **kwargs) as transition:
-                transition.action(state_machine, *args, **kwargs)
-
-                # Move to next state and record a log of all transitions so we can
-                # playback/rewind the service lifecycle..
+            with self.transition(state_machine, *args, **kwargs) as t:
+                t.action(state_machine, *args, **kwargs)
                 state = state_machine.state = self.next_state
-                state_machine.log.append(state)
                 return state
 
-        # Attach descriptor to wrapped transition func to allow for state "lookup" so we can playback/rewind
-        # an entire object transition lifecycle.
+        # Attach descriptor and helper functions to the decorator for easy use.
         functools.update_wrapper(decorator, self.action)
         decorator.transition = self
+        decorator.wait = wait
+
         return decorator
 
 
@@ -197,13 +195,18 @@ class StateGuardDescriptor(object):
         """
         if func is not None:
             functools.update_wrapper(self, func)
-        self.func = func
-        return self
+        return self.update(func)
 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
         return self.wrapper(instance)
+
+    def update(self, func=None):
+        """
+        Create a new `StateGuardDescriptor` instance composed of the updated function.
+        """
+        return type(self)(self.state, func or self.func)
 
     def wrapper(self, instance):
         """
@@ -241,104 +244,39 @@ class StateMachine(object):
     generated by the :class: `~scatter.state.Transition` descriptor.
     """
 
+    #:
+    #:
     state = initial_state = None
 
-    def __init__(self, initial_state):
+    def __init__(self, initial_state, event_cls):
         self.state = self.initial_state = initial_state
-        self.log = StateMachineLog(initial_state)
+        self.event = event_cls()
 
-    @cached
-    def transitions(self):
+    def __enter__(self):
+        self.event.acquire()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        exc_info = (exc_type, exc_val, exc_tb)
+        if not all(exc_info):
+            self.event.notify_all()
+        self.event.release()
+
+    def wait_for_state(self, state, timeout=None):
         """
-        Lookup table of all transitions within this state machine.
+        Block the caller for the given number of seconds waiting for the state machine
+        to enter the given state.
         """
-        t = collections.defaultdict(dict)
+        end = None
+        remaining = timeout
 
-        # Find all state machine functions wrapped with a @transition descriptor.
-        descriptors = (t for t in (getattr(self, f) for f in dir(self) if f != 'transitions') if hasattr(t, 'transition'))
-        for descriptor in descriptors:
-            for state in iterable(descriptor.transition.current_state):
-                t[state][descriptor.transition.next_state] = descriptor
-
-        return dict(t)
-
-    def to_state(self, state, *args, **kwargs):
-        """
-        Performs a forced transition to the given state.
-
-        :param state: Next state to transition to.
-        :param args: (Optional) Arguments to be consumed by transition.
-        :param kwargs: (Optional) Keyword arguments to be consumed by the transition.
-        """
-        transition = self.transitions.get(self.state).get(state)
-        if transition is None:
-            return self.state
-        state = self.state = transition(self, *args, **kwargs)
-        return state
-
-    def playback(self):
-        """
-        Generator which yields back historical transitions performed by this state machine,
-        starting with its initial state.
-        """
-        return (s for s in self.log)
-
-    def rewind(self):
-        """
-        Generator which yields back historical transitions performed by this state machine,
-        starting with its current state.
-        """
-        return (s for s in reversed(self.log))
-
-    def fast_forward(self, state_machine, *args, **kwargs):
-        """
-        Fast-forward this state machine to the current state of the given state machine.
-
-        :param state_machine: State machine to replay to reach an identical state.
-        """
-        # Replay slice of state log for all transitions beyond our current state.
-        for state in state_machine.log.replay(self.state):
-            self.to_state(state, *args, **kwargs)
-        return self.state
-
-
-class StateMachineLog(object):
-    """
-    Log of all state transitions made by a :class: `~scatter.state.StateMachine`.
-    """
-
-    def __init__(self, initial_state):
-        self.initial_state = initial_state
-        self.log = collections.deque((initial_state,))
-
-    def __contains__(self, item):
-        return item in self.log
-
-    def __iter__(self):
-        return iter(self.log)
-
-    def __len__(self):
-        return len(self.log)
-
-    def append(self, state):
-        self.log.append(state)
-
-    def popleft(self):
-        return self.log.popleft()
-
-    def popright(self):
-        return self.log.pop()
-
-    def replay(self, start_state=None):
-        """
-        Replay state machine transitions up until its current state.
-
-        :param start_state: (Optional) state to start the playback from. Defaults to initial_state.
-        """
-        # State at which to start the replay of the log (exclusive).
-        if start_state is None:
-            start_state = self.initial_state
-
-        # Drop entries until we reach our start state and slice it off.
-        log = itertools.dropwhile(lambda s: s != start_state, self.log)
-        return itertools.islice(log, 1, None)
+        with self.event:
+            while self.state != state:
+                if timeout is not None:
+                    if end is None:
+                        end = time.time() + timeout
+                    else:
+                        remaining = end - time.time()
+                        if remaining <= 0:
+                            return False
+                self.event.wait(remaining)
+        return True

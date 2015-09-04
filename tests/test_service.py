@@ -30,3 +30,15 @@ def test_service_name(service):
     """
     """
     assert service.name == service.__class__.__name__
+
+
+def test_service_meta_registers_new_types():
+    """
+
+    """
+
+
+def test_service_meta_caches_types():
+    """
+
+    """

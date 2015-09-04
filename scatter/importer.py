@@ -7,13 +7,16 @@
     :copyright: (c) 2014 Andrew Hawker.
     :license: ?, See LICENSE file.
 """
-__all__ = ('import_from', 'ExtensionImporter')
+__all__ = ('import_from', 'PackageImporter', 'ExtensionImporter')
 
 
 import importlib
 import inspect
 import os
+import pkg_resources
 import sys
+
+from scatter.descriptors import cached
 
 
 def import_from(obj, silent=False):
@@ -45,6 +48,69 @@ def import_from(obj, silent=False):
     except ImportError:
         if not silent:
             raise
+
+
+class PackageImporter(object):
+    """
+
+    """
+
+    #:
+    #:
+    entry_name = 'ext'
+
+    #:
+    #:
+    entry_enabled_name = 'ENABLED'
+
+    def __init__(self, service, ext_prefix='scatter'):
+        self.service = service
+        self.ext_prefix = ext_prefix
+
+    @cached
+    def entry_points(self):
+        """
+        """
+        def _iter_entry_points():
+            """
+            Helper function which yields back valid scatter extension packages. A valid package matches
+            the set `ext_prefix` and exports an entry_point in its `setup.py` named `package`. The
+            `package` value should be the fully qualified type string it should be imported under.
+            Ex: `scatter.ext.my_extension`
+            """
+            for dist in (d for d in pkg_resources.working_set if d.project_name.startswith(self.ext_prefix)):
+                for entry_point in dist.get_entry_map(None).values():
+                    package = entry_point.get(self.entry_name)
+                    if package is None:
+                        msg = 'Extension package {0} is missing entry point.'.format(dist.project_name)
+                        self.service.log.warning(msg)
+                        continue
+                    yield package
+
+        return list(_iter_entry_points())
+
+    def load(self, silent=False):
+        """
+        """
+        for package in self.entry_points:
+            package_name = package.dist.project_name
+            try:
+                # Attempt to load our extension package and check its status.
+                imported = package.load()
+                enabled = getattr(imported, self.entry_enabled_name, None)
+
+                # Extension packages must expose an attribute to inform us of enabled/disabled status.
+                if enabled is None:
+                    msg = 'Extension package {0} must expose {1} attribute to be enabled.'
+                    raise ImportError(msg.format(package_name, self.entry_enabled_name))
+
+                # Extension package successfully loaded and has valid entry point.
+                enabled = bool(enabled)
+                msg = 'Extension package {0} is {1}'.format(package_name, 'enabled' if enabled else 'disabled')
+                self.service.log.info(msg)
+            except ImportError:
+                if not silent:
+                    raise
 
 
 class ExtensionImporter(object):

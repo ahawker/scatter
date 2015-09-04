@@ -4,6 +4,7 @@
 
     Implements objects to support multiple wire data formats.
 """
+__all__ = []
 
 
 import abc

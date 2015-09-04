@@ -6,7 +6,6 @@
 """
 __all__ = ('Tree', 'Enum', 'ScatterDict', 'ScatterMapping')
 
-
 import abc
 import collections
 import imp
@@ -20,8 +19,10 @@ def immutable(func):
     """
     Decorate instance methods to define which can mutate an object instance.
     """
+
     def decorator(self, *args, **kwargs):
         raise TypeError('{0} is immutable'.format(self.__class__.__name__))
+
     return decorator
 
 
@@ -199,10 +200,12 @@ class ScatterMapping(collections.MutableMapping, KeyTransformMixin, LoadableMapp
     def transform(self, key):
         return key
 
-    def section(self, prefix=''):
+    def section(self, prefix='', sep='_'):
         """
         """
-        return ScatterMapping(type(self.store), ((k, v) for k, v in self.iteritems() if k.startswith(prefix)))
+        section = prefix + sep
+        return ScatterMapping(type(self.store),
+                              ((k.strip(section), v) for k, v in self.iteritems() if k.startswith(prefix)))
 
 
 class ScatterDict(ScatterMapping):
@@ -234,6 +237,7 @@ class Tree(collections.defaultdict):
         del self[item]
         return self
 
+
 tree = Tree.tree
 
 
@@ -244,7 +248,7 @@ class Enum(object):
 
     def __init__(self, enum, names):
         for i, name in enumerate(names.split()):
-            setattr(self, name, EnumMember(enum, name, 2**i))
+            setattr(self, name, EnumMember(enum, name, 2 ** i))
 
 
 class EnumMember(object):

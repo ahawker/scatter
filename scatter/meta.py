@@ -7,16 +7,41 @@
     :copyright: (c) 2014 Andrew Hawker.
     :license: ?, See LICENSE file.
 """
-__all__ = ('resolve_class', 'resolve_type', 'resolve_type_meta', 'get_public_attrs', 'get_instance_descriptors')
+__all__ = ('resolve_class', 'resolve_type', 'resolve_type_meta',
+           'get_public_attrs', 'get_instance_descriptors', 'is_abstract')
+
+
+import inspect
 
 
 NO_OP = lambda *args, **kwargs: True
+
+
+def is_abstract(cls):
+    """
+    Returns `True` if the given class object is marked with the `__abstract__`
+    attribute.
+    """
+    return cls.__dict__.get('__abstract__', False) is True
+
+
+def resolve_callable(func):
+    """
+
+    """
+    bound = hasattr(func, 'im_self')
+    if bound:
+        return repr(func)
+
+    return func.__name__
 
 
 def resolve_class(obj):
     """
     Return class name for the given object.
     """
+    if inspect.isclass(obj):
+        return obj.__name__
     return getattr(obj, '__class__', obj).__name__
 
 
